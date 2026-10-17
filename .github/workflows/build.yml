@@ -12,42 +12,25 @@ permissions:
 
 jobs:
   build:
-    name: Build GyroLock APK
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     env:
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
       ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
-      ANDROID_NDK_VERSION: 27.2.12479018
-      ANDROID_COMPILE_SDK: "35"
-      ANDROID_BUILD_TOOLS: "35.0.0"
 
     steps:
-
-      # ---------------------------------------------------------
-      # CHECKOUT
-      # ---------------------------------------------------------
-      - name: Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------------------------------------------------------
-      # JAVA 17
-      # ---------------------------------------------------------
-      - name: Setup Java 17
+      - name: Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # ---------------------------------------------------------
-      # PREPARE SETTINGS.GRADLE
-      # ---------------------------------------------------------
-      - name: Prepare Gradle project
-        shell: bash
+      - name: Prepare settings.gradle
         run: |
-          set -euxo pipefail
-
           cat > settings.gradle <<'EOF'
           pluginManagement {
               repositories {
@@ -58,7 +41,7 @@ jobs:
           }
 
           dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
               repositories {
                   google()
                   mavenCentral()
@@ -69,330 +52,91 @@ jobs:
           include(":app")
           EOF
 
-          echo "===== PROJECT ROOT ====="
-          pwd
-          ls -la
-
-          echo "===== SETTINGS ====="
-          cat settings.gradle
-
-          echo "===== BUILD.GRADLE ====="
-          cat build.gradle
-
-          echo "===== APP BUILD.GRADLE ====="
-          cat app/build.gradle
-
-      # ---------------------------------------------------------
-      # ANDROID COMMAND LINE TOOLS
-      # ---------------------------------------------------------
-      - name: Install Android SDK command line tools
-        shell: bash
+      - name: Install Android SDK
         run: |
-          set -euxo pipefail
-
           sudo apt-get update
           sudo apt-get install -y curl unzip
 
-          SDK_ROOT="$ANDROID_HOME"
-          TMP_DIR="$RUNNER_TEMP/android-cmdline-tools"
-          ZIP_FILE="$RUNNER_TEMP/cmdline-tools.zip"
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
 
-          mkdir -p "$SDK_ROOT/cmdline-tools"
-          mkdir -p "$TMP_DIR"
-
-          curl -fL --retry 5 --retry-delay 3 \
+          curl -L \
             "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
-            -o "$ZIP_FILE"
+            -o /tmp/cmdline.zip
 
-          unzip -q "$ZIP_FILE" -d "$TMP_DIR"
+          unzip -q /tmp/cmdline.zip -d /tmp/cmdline
 
-          rm -rf "$SDK_ROOT/cmdline-tools/latest"
-          mkdir -p "$SDK_ROOT/cmdline-tools/latest"
+          mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+          cp -a /tmp/cmdline/cmdline-tools/. \
+            "$ANDROID_HOME/cmdline-tools/latest/"
 
-          cp -a \
-            "$TMP_DIR/cmdline-tools/." \
-            "$SDK_ROOT/cmdline-tools/latest/"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
 
-          test -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
-          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-
-          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --version
-
-      # ---------------------------------------------------------
-      # ACCEPT LICENSE
-      # ---------------------------------------------------------
-      - name: Accept Android licenses
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            --sdk_root="$ANDROID_HOME" \
-            --licenses || true
-
-      # ---------------------------------------------------------
-      # INSTALL SDK / NDK / CMAKE
-      # ---------------------------------------------------------
-      - name: Install Android SDK packages
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-
-          "$SDKMANAGER" \
-            --sdk_root="$ANDROID_HOME" \
-            --install \
+          sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "ndk;27.2.12479018" \
             "cmake;3.22.1"
 
-      # ---------------------------------------------------------
-      # VERIFY TOOLCHAIN
-      # ---------------------------------------------------------
-      - name: Verify Android toolchain
-        shell: bash
+      - name: Install build tools
         run: |
-          set -euxo pipefail
-
-          echo "===== JAVA ====="
-          java -version
-
-          echo "===== SDK ====="
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            --sdk_root="$ANDROID_HOME" \
-            --list_installed
-
-          echo "===== NDK ====="
-          ls -la "$ANDROID_HOME/ndk/27.2.12479018"
-
-          echo "===== CMAKE ====="
-          "$ANDROID_HOME/cmake/3.22.1/bin/cmake" --version
-
-          echo "===== NINJA ====="
-          "$ANDROID_HOME/cmake/3.22.1/bin/ninja" --version
-
-      # ---------------------------------------------------------
-      # GLSLANG
-      # ---------------------------------------------------------
-      - name: Install Vulkan shader compiler
-        shell: bash
-        run: |
-          set -euxo pipefail
-
           sudo apt-get update
           sudo apt-get install -y glslang-tools
 
-          command -v glslangValidator
-          glslangValidator --version
-
-      # ---------------------------------------------------------
-      # GRADLE
-      # ---------------------------------------------------------
-      - name: Setup Gradle 8.9
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      # ---------------------------------------------------------
-      # VERIFY SOURCE
-      # ---------------------------------------------------------
-      - name: Verify source structure
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "===== SOURCE TREE ====="
-
-          find app/src/main \
-            -maxdepth 4 \
-            -type f \
-            -print \
-            | sort
-
-          echo "===== REQUIRED FILES ====="
-
-          test -f settings.gradle
-          test -f build.gradle
-          test -f app/build.gradle
-          test -f app/src/main/AndroidManifest.xml
-          test -f app/src/main/cpp/CMakeLists.txt
-          test -f app/src/main/cpp/gyrolock_vulkan.cpp
-          test -f app/src/main/cpp/fullscreen.vert
-          test -f app/src/main/cpp/stabilize.frag
-
-          echo "ALL REQUIRED FILES EXIST."
-
-      # ---------------------------------------------------------
-      # CHECK CMAKE CONFIGURATION FIRST
-      # ---------------------------------------------------------
-      - name: Test CMake configuration
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "===== CMAKE FILE ====="
-          cat app/src/main/cpp/CMakeLists.txt
-
-          echo "===== NDK ====="
-          echo "$ANDROID_NDK_VERSION"
-
-          echo "===== ABI ====="
-          echo "arm64-v8a"
-          echo "armeabi-v7a"
-          echo "x86_64"
-
-      # ---------------------------------------------------------
-      # BUILD APK
-      # ---------------------------------------------------------
-      - name: Build Debug APK
-        id: build_apk
-        shell: bash
+      - name: Build APK
+        id: build
+        continue-on-error: true
         run: |
           set -o pipefail
 
-          echo "=========================================="
-          echo "STARTING GRADLE BUILD"
-          echo "=========================================="
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            --console=plain \
+            assembleDebug \
+            2>&1 | tee build.log
 
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-
-            ./gradlew \
-              --no-daemon \
-              --stacktrace \
-              --info \
-              --console=plain \
-              clean assembleDebug \
-              2>&1 | tee gradle-build.log
-          else
-            gradle \
-              --no-daemon \
-              --stacktrace \
-              --info \
-              --console=plain \
-              clean assembleDebug \
-              2>&1 | tee gradle-build.log
-          fi
-
-      # ---------------------------------------------------------
-      # DEBUG BUILD FAILURE
-      # ---------------------------------------------------------
-      - name: Dump native build logs
-        if: failure()
-        shell: bash
+      - name: Show ONLY important errors
+        if: steps.build.outcome == 'failure'
         run: |
-          set +e
+          echo ""
+          echo "=========================================="
+          echo "       GYROLOCK BUILD ERROR"
+          echo "=========================================="
+          echo ""
+
+          echo "----- ERROR / FAILED -----"
+
+          grep -iE \
+            "error:|error |FAILED|fatal error|ninja: error|CMake Error|Exception" \
+            build.log \
+            | tail -100 \
+            || true
 
           echo ""
-          echo "=================================================="
-          echo "BUILD FAILED - COLLECTING DEBUG INFORMATION"
-          echo "=================================================="
+          echo "----- LAST 80 LINES -----"
+
+          tail -80 build.log
 
           echo ""
-          echo "================ GRADLE BUILD LOG ================"
-          if [ -f gradle-build.log ]; then
-            cat gradle-build.log
-          else
-            echo "gradle-build.log tidak ditemukan"
-          fi
+          echo "=========================================="
+          echo "Jika masih belum jelas, lihat bagian"
+          echo "di atas yang diawali 'error:' atau 'FAILED:'"
+          echo "=========================================="
 
-          echo ""
-          echo "================ CXX DIRECTORIES ================="
+          exit 1
 
-          find app/.cxx \
-            -type d \
-            -maxdepth 8 \
-            -print 2>/dev/null || true
-
-          echo ""
-          echo "================ CMAKE FILES ====================="
-
-          find app/.cxx \
-            -type f \
-            \( \
-              -name "CMakeError.log" \
-              -o \
-              -name "CMakeOutput.log" \
-              -o \
-              -name "build.ninja" \
-              -o \
-              -name "rules.ninja" \
-            \) \
-            -print 2>/dev/null || true
-
-          echo ""
-          echo "================ CMAKE ERROR LOGS ==============="
-
-          find app/.cxx \
-            -type f \
-            -name "CMakeError.log" \
-            -exec sh -c '
-              echo "----- $1 -----"
-              cat "$1"
-            ' _ {} \; 2>/dev/null || true
-
-          echo ""
-          echo "================ CMAKE OUTPUT LOGS =============="
-
-          find app/.cxx \
-            -type f \
-            -name "CMakeOutput.log" \
-            -exec sh -c '
-              echo "----- $1 -----"
-              cat "$1"
-            ' _ {} \; 2>/dev/null || true
-
-          echo ""
-          echo "================ NINJA FILES ===================="
-
-          find app/.cxx \
-            -type f \
-            -name "build.ninja" \
-            -exec sh -c '
-              echo "----- $1 -----"
-              grep -nE "gyrolock|vulkan|cpp|error|clang" "$1" | head -300
-            ' _ {} \; 2>/dev/null || true
-
-          echo ""
-          echo "================ NATIVE SOURCE =================="
-
-          nl -ba app/src/main/cpp/gyrolock_vulkan.cpp \
-            | sed -n '1,220p'
-
-          echo ""
-          echo "================ CMAKE LIST ====================="
-
-          nl -ba app/src/main/cpp/CMakeLists.txt
-
-      # ---------------------------------------------------------
-      # UPLOAD LOGS
-      # ---------------------------------------------------------
-      - name: Upload build logs
-        if: failure()
+      - name: Upload APK
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: GyroLock-build-debug-logs
-          path: |
-            gradle-build.log
-            app/.cxx/**
-            app/build/reports/**
-            app/build/outputs/logs/**
-          if-no-files-found: ignore
-          retention-days: 14
-
-      # ---------------------------------------------------------
-      # UPLOAD APK
-      # ---------------------------------------------------------
-      - name: Upload Debug APK
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: GyroLock-debug-apk
+          name: GyroLock-debug
           path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          retention-days: 14
